@@ -19,6 +19,13 @@ from google.cloud import speech
 import pyaudio
 from google.oauth2 import service_account
 
+import threading 
+
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+
 dotenv.load_dotenv()
 client_chatbot = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
@@ -335,11 +342,33 @@ def get_upcoming_meetings(credentials):
         })
     return upcoming_meetings
 
+def handle_input():
+    if st.session_state.user_input:
+        prompt = st.session_state.user_input
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # Generate and append assistant response
+        if prompt.lower() == "false":
+            response = detect_exaggeration(transcription)
+        elif prompt.lower() == "summary":
+            response = summarize(transcription)
+        elif prompt.lower() == "response":
+            response = generate_response(transcription)
+        else:
+            response = "I'm sorry, I didn't understand that command. Please type 'summary', 'false', or 'response'."
+        
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        
+        # Clear the input
+        st.session_state.user_input = ""
+
 def init_session_state():
     if "google_auth_code" not in st.session_state:
         st.session_state["google_auth_code"] = None
     if "user_info" not in st.session_state:
         st.session_state["user_info"] = None
+    if 'messages' not in st.session_state:
+        st.session_state.messages = []
 
 def format_datetime(dt_string):
     dt = datetime.datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
@@ -356,19 +385,15 @@ with st.sidebar:
                          iconName=['dashboard', 'mail', 'phone', 'lightbulb'], default_choice=0)
 
 if tabs == 'Dashboard':
-    st.title("TikTok CRM")
+    st.title("TikTok Smart Sales Helper")
 
 elif tabs == 'Mail':
     st.title("Client Interactions")
 
 elif tabs == 'Meetings':
     st.title("Client Meetings")
-    selected = option_menu(
-        menu_title=None, 
-        options=["Upcoming Meetings", "Smart Call Assistant", "Meeting Minutes"],
-        orientation="horizontal",
-    )
-    if selected == "Upcoming Meetings": 
+    meeting_tabs = st.tabs(["Upcoming Meetings", "Smart Meeting Assistant", "Meeting Minutes"])
+    with meeting_tabs[0]: 
         user_data = load_user_data()
         if user_data and 'credentials' in user_data:
             credentials_dict = json.loads(user_data['credentials'])
@@ -389,7 +414,7 @@ elif tabs == 'Meetings':
                 "initialView": "dayGridMonth",
                 "selectable": True,
                 "events": events,
-                "height": "600px",
+                "height": "500px",
             }
 
             selected_date = calendar(events=events, options=calendar_options)
@@ -420,7 +445,7 @@ elif tabs == 'Meetings':
                         st.markdown(f"Start: {start}")
                         st.markdown(f"End: {end}")
 
-    if selected == "Smart Call Assistant":
+    with meeting_tabs[1]:
         client = speech.SpeechClient(credentials=credentials)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -440,14 +465,10 @@ elif tabs == 'Meetings':
 
         # start button
         if col1.button("Start Recording", key="start_button"):
-            record_audio(client, streaming_config, mic_index, spkr_index)
+            threading.Thread(target=record_audio, args=(client, streaming_config, mic_index, spkr_index), daemon=True).start()
 
         # stop button
-        col2.button("Stop Recording", key="stop_button")
-            
-        # Initialize chat history
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
+        col2.button("Meeting Done", key="stop_button")
 
         # Display chat messages from history on app rerun
         for message in st.session_state.messages:
@@ -479,6 +500,113 @@ elif tabs == 'Meetings':
 
 elif tabs == 'Business':
     st.title("Business Intelligence")
+
+    # Create tabs for different BI perspectives
+    bi_tabs = st.tabs(["Manager's Perspective", "Team Performance", "Sales Analysis", "Personal Sales Process"])
+
+    with bi_tabs[0]:
+        st.header("Advertising Sales Manager")
+        # Example KPIs for boss's perspective
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Revenue", "$1.2M", "+8%")
+        col2.metric("Profit Margin", "22%", "+2%")
+        col3.metric("Customer Acquisition Cost", "$50", "-10%")
+
+        # Example chart
+        st.subheader("Revenue Trend")
+        chart_data = pd.DataFrame(
+            np.random.randn(20, 3),
+            columns=['Revenue', 'Costs', 'Profit'])
+        st.line_chart(chart_data)
+
+    with bi_tabs[1]:
+        st.header("Team Performance")
+
+        # Team performance metrics
+        st.subheader("Team KPIs")
+        team_data = pd.DataFrame({
+            'Team Member': ['Alice', 'Bob', 'Charlie', 'David'],
+            'Sales': [100000, 85000, 92000, 78000],
+            'Deals Closed': [15, 12, 14, 10],
+            'Customer Satisfaction': [4.8, 4.6, 4.7, 4.5],
+            'Conversion Rate': [0.25, 0.22, 0.24, 0.20],
+            'Average Deal Size': [6667, 7083, 6571, 7800]
+        })
+
+        st.dataframe(team_data)
+
+        # Team performance charts
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Sales Performance by Team Member")
+            fig = px.bar(team_data, x='Team Member', y='Sales', text='Sales')
+            fig.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
+            fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Deals Closed vs Customer Satisfaction")
+            fig = px.scatter(team_data, x='Deals Closed', y='Customer Satisfaction', color='Team Member', hover_name='Team Member')
+            st.plotly_chart(fig, use_container_width=True)
+
+    with bi_tabs[2]:
+        st.header("Sales Analysis")
+        # Sales funnel
+        funnel_data = pd.DataFrame({
+            'Stage': ['Leads', 'Qualified Leads', 'Proposals', 'Negotiations', 'Closed Deals'],
+            'Count': [1000, 500, 200, 100, 50]
+        })
+        fig = go.Figure(go.Funnel(
+            y = funnel_data['Stage'],
+            x = funnel_data['Count'],
+            textinfo = "value+percent total"
+        ))
+        # Customize the layout
+        fig.update_layout(
+            font_size = 14,
+            width = 800,
+            height = 500
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        st.subheader("Sales Trend")
+        dates = pd.date_range(start='1/1/2024', end='7/1/2024', freq='ME')
+        sales_trend = pd.DataFrame({
+            'Date': dates,
+            'Sales': np.random.randint(50000, 100000, size=len(dates))
+        })
+        sales_trend.set_index('Date', inplace=True)
+        st.line_chart(sales_trend)
+
+    with bi_tabs[3]:
+        st.header("Personal Sales Process Analysis")
+        # Personal sales metrics
+        st.subheader("Your Sales Metrics")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Your Sales", "$120K", "+5%")
+        col2.metric("Conversion Rate", "18%", "+2%")
+        col3.metric("Average Deal Size", "$8K", "+1%")
+
+        # Sales activity breakdown
+        st.subheader("Your Sales Activities")
+        activities = pd.DataFrame({
+            'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
+            'Hours Spent': [20, 15, 10, 5]
+        })
+        fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
+        fig.update_layout(title_text='Sales Activities Breakdown')
+        st.plotly_chart(fig)
+
+        # Areas for improvement
+        st.subheader("Areas for Improvement")
+        improvements = [
+            "Increase follow-up frequency",
+            "Improve product knowledge",
+            "Enhance negotiation skills"
+        ]
+        for item in improvements:
+            st.write(f"- {item}")
 
 def main():
     if "code" in st.query_params:
