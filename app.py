@@ -3,6 +3,7 @@ from st_on_hover_tabs import on_hover_tabs
 from streamlit_option_menu import option_menu
 from streamlit_calendar import calendar
 from streamlit_modal import Modal
+
 import datetime
 import os
 import pickle
@@ -153,7 +154,7 @@ class ResumableMicrophoneStream:
 
             yield b"".join(data)
 
-def listen_print_loop(responses, stream):
+def listen_print_loop(responses, stream, filename):
     transcript_container = st.empty()
     full_transcript = []
 
@@ -199,7 +200,7 @@ def listen_print_loop(responses, stream):
                 for item in full_transcript:
                     f.write(f"{item}\n")
 
-def record_audio(client, streaming_config, mic_index, spkr_index):
+def record_audio(client, streaming_config, mic_index, spkr_index, filename):
     mic_manager = ResumableMicrophoneStream(SAMPLE_RATE, CHUNK_SIZE, mic_index, spkr_index)
     
     with mic_manager as stream:
@@ -212,7 +213,7 @@ def record_audio(client, streaming_config, mic_index, spkr_index):
             )
 
             responses = client.streaming_recognize(streaming_config, requests)
-            listen_print_loop(responses, stream)
+            listen_print_loop(responses, stream, filename)
 
             if stream.result_end_time > 0:
                 stream.final_request_end_time = stream.is_final_end_time
@@ -342,6 +343,88 @@ def get_upcoming_meetings(credentials):
         })
     return upcoming_meetings
 
+def meeting_minutes(transcription):
+    abstract_summary = abstract_summary_extraction(transcription)
+    key_points = key_points_extraction(transcription)
+    action_items = action_item_extraction(transcription)
+    sentiment = sentiment_analysis(transcription)
+    return {
+        'abstract_summary': abstract_summary,
+        'key_points': key_points,
+        'action_items': action_items,
+        'sentiment': sentiment
+    }
+
+def abstract_summary_extraction(transcription):
+    response = client_chatbot.chat.completions.create(
+        model="gpt-4",
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a highly skilled AI trained in language comprehension and summarization. I would like you to read the following text and summarize it into a concise abstract paragraph. Aim to retain the most important points, providing a coherent and readable summary that could help a person understand the main points of the discussion without needing to read the entire text. Please avoid unnecessary details or tangential points."
+            },
+            {
+                "role": "user",
+                "content": transcription
+            }
+        ]
+    )
+    return response.choices[0].message.content
+
+
+def key_points_extraction(transcription):
+    response = client_chatbot.chat.completions.create(
+        model="gpt-4",
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a proficient AI with a specialty in distilling information into key points. Based on the following text, identify and list the main points that were discussed or brought up. These should be the most important ideas, findings, or topics that are crucial to the essence of the discussion. Your goal is to provide a list that someone could read to quickly understand what was talked about."
+            },
+            {
+                "role": "user",
+                "content": transcription
+            }
+        ]
+    )
+    return response.choices[0].message.content
+
+
+def action_item_extraction(transcription):
+    response = client_chatbot.chat.completions.create(
+        model="gpt-4",
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an AI expert in analyzing conversations and extracting action items. Please review the text and identify any tasks, assignments, or actions that were agreed upon or mentioned as needing to be done. These could be tasks assigned to specific individuals, or general actions that the group has decided to take. Please list these action items clearly and concisely."
+            },
+            {
+                "role": "user",
+                "content": transcription
+            }
+        ]
+    )
+    return response.choices[0].message.content
+
+def sentiment_analysis(transcription):
+    response = client_chatbot.chat.completions.create(
+        model="gpt-4",
+        temperature=0,
+        messages=[
+            {
+                "role": "system",
+                "content": "As an AI with expertise in language and emotion analysis, your task is to analyze the sentiment of the following text. Please consider the overall tone of the discussion, the emotion conveyed by the language used, and the context in which words and phrases are used. Indicate whether the sentiment is generally positive, negative, or neutral, and provide brief explanations for your analysis where possible."
+            },
+            {
+                "role": "user",
+                "content": transcription
+            }
+        ]
+    )
+    return response.choices[0].message.content
+
 def handle_input():
     if st.session_state.user_input:
         prompt = st.session_state.user_input
@@ -381,19 +464,21 @@ init_session_state()
 st.markdown('<style>' + open('./style.css').read() + '</style>', unsafe_allow_html=True)
 
 with st.sidebar:
-    tabs = on_hover_tabs(tabName=['Dashboard', 'Mail', 'Meetings', 'Business'], 
-                         iconName=['dashboard', 'mail', 'phone', 'lightbulb'], default_choice=0)
+    tabs = on_hover_tabs(tabName=['Clients', 'Meetings', 'Business', 'Profile', 'Logout'], 
+                         iconName=['dashboard', 'phone', 'lightbulb', 'person', 'logout'], default_choice=0)
 
-if tabs == 'Dashboard':
+if tabs == 'Clients':
     st.title("TikTok Smart Sales Helper")
-
-elif tabs == 'Mail':
-    st.title("Client Interactions")
 
 elif tabs == 'Meetings':
     st.title("Client Meetings")
-    meeting_tabs = st.tabs(["Upcoming Meetings", "Smart Meeting Assistant", "Meeting Minutes"])
-    with meeting_tabs[0]: 
+    #meeting_tabs = st.tabs(["Upcoming Meetings", "Smart Meeting Assistant", "Meeting Minutes"])
+    selected = option_menu(
+         menu_title=None, 
+         options=["Upcoming Meetings", "Smart Call Assistant", "Meeting Minutes"],
+         orientation="horizontal",
+     )
+    if selected == "Upcoming Meetings": 
         user_data = load_user_data()
         if user_data and 'credentials' in user_data:
             credentials_dict = json.loads(user_data['credentials'])
@@ -445,7 +530,24 @@ elif tabs == 'Meetings':
                         st.markdown(f"Start: {start}")
                         st.markdown(f"End: {end}")
 
-    with meeting_tabs[1]:
+    if selected == "Smart Call Assistant":
+        # Get today's meetings
+        user_data = load_user_data()
+        today_events = []
+        if user_data and 'credentials' in user_data:
+            credentials_dict = json.loads(user_data['credentials'])
+            credentials = Credentials.from_authorized_user_info(info=credentials_dict)
+            events = get_upcoming_meetings(credentials)
+            today = datetime.datetime.now().date()
+            today_events = [event for event in events if datetime.datetime.fromisoformat(event['start'].rstrip('Z')).date() == today]
+
+        # Dropdown to select the meeting
+        selected_meeting = st.selectbox(
+            "Select current meeting and record call",
+            options=[f"{event['title']} - {format_datetime(event['start'])}" for event in today_events],
+            format_func=lambda x: x.split(" - ")[0]
+        )
+
         client = speech.SpeechClient(credentials=credentials)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
@@ -461,14 +563,17 @@ elif tabs == 'Meetings':
         spkr_index = 2 
 
         # columns for start and stop buttons
-        col1, col2 = st.columns(2)
+        col1, col2 = st.columns([1,1])
 
         # start button
         if col1.button("Start Recording", key="start_button"):
-            threading.Thread(target=record_audio, args=(client, streaming_config, mic_index, spkr_index), daemon=True).start()
+            meeting_name = selected_meeting.split(" - ")[0]
+            filename = f"{meeting_name}_transcript.txt"
+            threading.Thread(target=record_audio, args=(client, streaming_config, mic_index, spkr_index, filename), daemon=True).start()
 
         # stop button
-        col2.button("Meeting Done", key="stop_button")
+        if col2.button("Meeting Done", key="stop_button"):
+            st.success("Recording stopped and transcript saved.")
 
         # Display chat messages from history on app rerun
         for message in st.session_state.messages:
@@ -485,6 +590,7 @@ elif tabs == 'Meetings':
                 st.markdown(prompt)
             
             # Generate and display assistant response
+            response = ""
             with st.chat_message("assistant"):
                 with st.spinner("Generating..."):
                     if prompt.lower() == "false":
@@ -498,11 +604,43 @@ elif tabs == 'Meetings':
             # Add assistant response to chat history
             st.session_state.messages.append({"role": "assistant", "content": response})
 
+    if selected == "Meeting Minutes":
+
+        transcript_files = [f for f in os.listdir() if f.endswith(".txt")]
+        
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.subheader("Previous Meetings")
+            # Dropdown to select the meeting
+            selected_meeting = st.selectbox("Select a meeting", transcript_files)
+
+            if st.button("Get Report"):
+                with st.spinner("Generating..."):
+                    # Read the selected transcript file
+                    with open(selected_meeting, "r") as file:
+                        transcription = file.read()
+                    
+                    # Generate meeting minutes
+                    minutes = meeting_minutes(transcription)
+
+                    # Save the generated minutes to session state
+                    st.session_state.generated_minutes = minutes
+
+        with col2:
+            if 'generated_minutes' in st.session_state:
+                st.subheader("Report")
+
+                for key, value in st.session_state.generated_minutes.items():
+                    with st.expander(key.replace('_', ' ').title()):
+                        st.write(value)
+
+
 elif tabs == 'Business':
     st.title("Business Intelligence")
 
     # Create tabs for different BI perspectives
-    bi_tabs = st.tabs(["Manager's Perspective", "Team Performance", "Sales Analysis", "Personal Sales Process"])
+    bi_tabs = st.tabs(["Manager's Insights", "Team Performance", "Sales Analysis", "Personal Sales Process"])
 
     with bi_tabs[0]:
         st.header("Advertising Sales Manager")
@@ -533,7 +671,7 @@ elif tabs == 'Business':
             'Average Deal Size': [6667, 7083, 6571, 7800]
         })
 
-        st.dataframe(team_data)
+        st.table(team_data)
 
         # Team performance charts
         col1, col2 = st.columns(2)
@@ -552,32 +690,37 @@ elif tabs == 'Business':
 
     with bi_tabs[2]:
         st.header("Sales Analysis")
-        # Sales funnel
-        funnel_data = pd.DataFrame({
-            'Stage': ['Leads', 'Qualified Leads', 'Proposals', 'Negotiations', 'Closed Deals'],
-            'Count': [1000, 500, 200, 100, 50]
-        })
-        fig = go.Figure(go.Funnel(
-            y = funnel_data['Stage'],
-            x = funnel_data['Count'],
-            textinfo = "value+percent total"
-        ))
-        # Customize the layout
-        fig.update_layout(
-            font_size = 14,
-            width = 800,
-            height = 500
-        )
-        st.plotly_chart(fig, use_container_width=True)
+        col1, col2 = st.columns([3,2])
 
-        st.subheader("Sales Trend")
-        dates = pd.date_range(start='1/1/2024', end='7/1/2024', freq='ME')
-        sales_trend = pd.DataFrame({
-            'Date': dates,
-            'Sales': np.random.randint(50000, 100000, size=len(dates))
-        })
-        sales_trend.set_index('Date', inplace=True)
-        st.line_chart(sales_trend)
+        with col1:
+            st.subheader("Sales Funnel")
+            # Sales funnel
+            funnel_data = pd.DataFrame({
+                'Stage': ['Leads', 'Qualified Leads', 'Proposals', 'Negotiations', 'Closed Deals'],
+                'Count': [1000, 500, 200, 100, 50]
+            })
+            fig = go.Figure(go.Funnelarea(
+                values = funnel_data['Count'],
+                text = funnel_data['Stage'],
+                #textinfo = "value+percent total"
+            ))
+            # Customize the layout
+            fig.update_layout(
+                font_size = 14,
+                height = 300,
+                margin=dict(t=0, b=0, l=0, r=0) 
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            st.subheader("Sales Trend")
+            dates = pd.date_range(start='1/1/2024', end='7/1/2024', freq='ME')
+            sales_trend = pd.DataFrame({
+                'Date': dates,
+                'Sales': np.random.randint(50000, 100000, size=len(dates))
+            })
+            sales_trend.set_index('Date', inplace=True)
+            st.line_chart(sales_trend)
 
     with bi_tabs[3]:
         st.header("Personal Sales Process Analysis")
@@ -589,24 +732,91 @@ elif tabs == 'Business':
         col3.metric("Average Deal Size", "$8K", "+1%")
 
         # Sales activity breakdown
-        st.subheader("Your Sales Activities")
-        activities = pd.DataFrame({
-            'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
-            'Hours Spent': [20, 15, 10, 5]
-        })
-        fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
-        fig.update_layout(title_text='Sales Activities Breakdown')
-        st.plotly_chart(fig)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Activities Breakdown")
+            activities = pd.DataFrame({
+                'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
+                'Hours Spent': [20, 15, 10, 5]
+            })
+            fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
+            fig.update_layout(title_text='Sales Activities Breakdown', 
+                              margin=dict(t=40, b=0, l=0, r=0),
+                              height = 300,  
+                              width = 500)
+            st.plotly_chart(fig)
 
-        # Areas for improvement
-        st.subheader("Areas for Improvement")
-        improvements = [
-            "Increase follow-up frequency",
-            "Improve product knowledge",
-            "Enhance negotiation skills"
-        ]
-        for item in improvements:
-            st.write(f"- {item}")
+        with col2:
+            # Areas for improvement
+            st.subheader("Areas for Improvement")
+            improvements = [
+                "Increase follow-up frequency",
+                "Improve product knowledge",
+                "Enhance negotiation skills"
+            ]
+
+            for item in improvements:
+                st.info(item)
+elif tabs == 'Profile':
+    st.title("TikTok Smart Sales Profile")
+    user_data = load_user_data()
+
+    # Initialize session state for profile data if not exists
+    if 'profile_data' not in st.session_state:
+        st.session_state.profile_data = {
+            'name': user_data.get('name', "John Doe") if user_data else "John Doe",
+            'email': user_data.get('email', "john.doe@example.com") if user_data else "john.doe@example.com",
+            'role': "Senior Sales Representative",
+            'phone': "+1 (555) 123-4567",
+            'team': "Enterprise Sales Team",
+            'reports_to': "Sarah Johnson, Sales Director",
+            'bio': "Experienced sales professional with a track record of exceeding targets in the enterprise software sector. Specializes in building long-term client relationships and delivering tailored solutions."
+        }
+
+    # Create two columns for layout
+    col1, col2 = st.columns([1, 3])
+
+    with col1:
+        # Profile picture placeholder
+        st.image("https://i.pinimg.com/originals/54/8a/65/548a659c2b06a877516d3c998f5b0939.png", width=200)
+        # Edit profile button
+        if st.button("Edit Profile"):
+            st.session_state.edit_mode = not st.session_state.get('edit_mode', False)
+
+    with col2:
+        if st.session_state.get('edit_mode', False):
+            # Editable fields
+            st.session_state.profile_data['name'] = st.text_input("Name", st.session_state.profile_data['name'])
+            st.session_state.profile_data['role'] = st.text_input("Role", st.session_state.profile_data['role'])
+            st.session_state.profile_data['email'] = st.text_input("Email", st.session_state.profile_data['email'])
+            st.session_state.profile_data['phone'] = st.text_input("Phone", st.session_state.profile_data['phone'])
+            st.session_state.profile_data['team'] = st.text_input("Team", st.session_state.profile_data['team'])
+            st.session_state.profile_data['reports_to'] = st.text_input("Reports to", st.session_state.profile_data['reports_to'])
+            st.session_state.profile_data['bio'] = st.text_area("Bio", st.session_state.profile_data['bio'])
+            
+            if st.button("Save Changes"):
+                st.session_state.edit_mode = False
+                st.success("Profile updated successfully!")
+                st.experimental_rerun()
+        else:
+            # Display profile information
+            st.header(st.session_state.profile_data['name'])
+            st.markdown(f"### *{st.session_state.profile_data['role']}*")
+            
+            st.markdown("---")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"**Email:** {st.session_state.profile_data['email']}")
+                st.markdown(f"**Phone:** {st.session_state.profile_data['phone']}")
+            with col2:
+                st.markdown(f"**Team:** {st.session_state.profile_data['team']}")
+                st.markdown(f"**Reports to:** {st.session_state.profile_data['reports_to']}")
+            
+            st.markdown("---")
+            
+            st.subheader("Bio")
+            st.write(st.session_state.profile_data['bio'])
 
 def main():
     if "code" in st.query_params:
