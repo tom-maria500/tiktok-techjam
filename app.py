@@ -30,8 +30,8 @@ import plotly.express as px
 dotenv.load_dotenv()
 client_chatbot = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-client_file = 'service_account_info.json'
-credentials = service_account.Credentials.from_service_account_file(client_file)
+client_file = 'smart_chat_service_account.json'
+speech_credentials = service_account.Credentials.from_service_account_file(client_file)
 
 # Audio recording parameters
 STREAMING_LIMIT = 240000  # 4 minutes
@@ -192,13 +192,13 @@ def listen_print_loop(responses, stream, filename):
             full_transcript_with_interim = full_transcript + [interim_output]
             stream.last_transcript_was_final = False
 
-        formatted_transcript = "\n".join(full_transcript_with_interim if not result.is_final else full_transcript)
-        # transcript_container.text_area("Transcript", formatted_transcript, height=400, key=str(uuid.uuid4()))
+        # formatted_transcript = "\n".join(full_transcript_with_interim if not result.is_final else full_transcript)
 
         if result.is_final:
-            with open("transcript.txt", "w") as f:
-                for item in full_transcript:
-                    f.write(f"{item}\n")
+            if not stop_recording_event.is_set():
+                with open(filename, "w") as f:
+                    for item in full_transcript:
+                        f.write(f"{item}\n")
 
 def record_audio(client, streaming_config, mic_index, spkr_index, filename):
     mic_manager = ResumableMicrophoneStream(SAMPLE_RATE, CHUNK_SIZE, mic_index, spkr_index)
@@ -279,10 +279,6 @@ def summarize(transcription):
         ]
     )
     return response.choices[0].message.content
-
-# Read the transcript once at the start
-text_file_path = "transcript.txt"
-transcription = read_text_file(text_file_path)
 
 # Configuration
 REDIRECT_URI = "http://localhost:8501"
@@ -425,26 +421,6 @@ def sentiment_analysis(transcription):
     )
     return response.choices[0].message.content
 
-def handle_input():
-    if st.session_state.user_input:
-        prompt = st.session_state.user_input
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # Generate and append assistant response
-        if prompt.lower() == "false":
-            response = detect_exaggeration(transcription)
-        elif prompt.lower() == "summary":
-            response = summarize(transcription)
-        elif prompt.lower() == "response":
-            response = generate_response(transcription)
-        else:
-            response = "I'm sorry, I didn't understand that command. Please type 'summary', 'false', or 'response'."
-        
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        
-        # Clear the input
-        st.session_state.user_input = ""
-
 def init_session_state():
     if "google_auth_code" not in st.session_state:
         st.session_state["google_auth_code"] = None
@@ -452,6 +428,10 @@ def init_session_state():
         st.session_state["user_info"] = None
     if 'messages' not in st.session_state:
         st.session_state.messages = []
+    if 'filename' not in st.session_state:
+        st.session_state.filename = ""
+    if 'edit_mode' not in st.session_state:
+        st.session_state.edit_mode = False
 
 def format_datetime(dt_string):
     dt = datetime.datetime.fromisoformat(dt_string.replace('Z', '+00:00'))
@@ -461,13 +441,20 @@ st.set_page_config(layout="wide")
 
 init_session_state()
 
+# Define a stop event
+stop_recording_event = threading.Event()
+
 st.markdown('<style>' + open('./style.css').read() + '</style>', unsafe_allow_html=True)
 
 with st.sidebar:
-    tabs = on_hover_tabs(tabName=['Clients', 'Meetings', 'Business', 'Profile', 'Logout'], 
+    option = st.selectbox(
+        "Select client",
+        ('Amazon', 'Shopify', 'Adobe')
+    )
+    tabs = on_hover_tabs(tabName=['Home', 'Meetings', 'Business', 'Profile', 'Logout'], 
                          iconName=['dashboard', 'phone', 'lightbulb', 'person', 'logout'], default_choice=0)
 
-if tabs == 'Clients':
+if tabs == 'Home':
     st.title("TikTok Smart Sales Helper")
 
 elif tabs == 'Meetings':
@@ -543,12 +530,12 @@ elif tabs == 'Meetings':
 
         # Dropdown to select the meeting
         selected_meeting = st.selectbox(
-            "Select current meeting and record call",
+            "Select current meeting and record call. Stop recording when the call is finished.",
             options=[f"{event['title']} - {format_datetime(event['start'])}" for event in today_events],
             format_func=lambda x: x.split(" - ")[0]
         )
 
-        client = speech.SpeechClient(credentials=credentials)
+        speech_client = speech.SpeechClient(credentials=speech_credentials)
         config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=SAMPLE_RATE,
@@ -565,14 +552,19 @@ elif tabs == 'Meetings':
         # columns for start and stop buttons
         col1, col2 = st.columns([1,1])
 
+        transcription = ""
+        filename = ""
         # start button
         if col1.button("Start Recording", key="start_button"):
+            stop_recording_event.clear()
             meeting_name = selected_meeting.split(" - ")[0]
             filename = f"{meeting_name}_transcript.txt"
-            threading.Thread(target=record_audio, args=(client, streaming_config, mic_index, spkr_index, filename), daemon=True).start()
+            st.session_state.filename = filename
+            threading.Thread(target=record_audio, args=(speech_client, streaming_config, mic_index, spkr_index, filename), daemon=True).start()
 
         # stop button
         if col2.button("Meeting Done", key="stop_button"):
+            stop_recording_event.set()
             st.success("Recording stopped and transcript saved.")
 
         # Display chat messages from history on app rerun
@@ -591,6 +583,9 @@ elif tabs == 'Meetings':
             
             # Generate and display assistant response
             response = ""
+            # get content from the transcript 
+            if st.session_state.filename:
+                transcription = read_text_file(st.session_state.filename)
             with st.chat_message("assistant"):
                 with st.spinner("Generating..."):
                     if prompt.lower() == "false":
@@ -777,7 +772,7 @@ elif tabs == 'Profile':
     col1, col2 = st.columns([1, 3])
 
     with col1:
-        # Profile picture placeholder
+        # profile picture placeholder
         st.image("https://i.pinimg.com/originals/54/8a/65/548a659c2b06a877516d3c998f5b0939.png", width=200)
         # Edit profile button
         if st.button("Edit Profile"):
