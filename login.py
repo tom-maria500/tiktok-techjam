@@ -1,25 +1,63 @@
-import os
-import streamlit as st
+import streamlit as st 
 import webbrowser
+from app import home
+
+import datetime
+import os
+import pickle
+import json
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
-from google.oauth2.credentials import Credentials
+from openai import OpenAI
+import dotenv
 
-redirect_uri = "http://localhost:8501"
-client_secrets_file = "clientSecrets.json"
+import queue
+import time
+from google.cloud import speech
+import pyaudio
+from google.oauth2 import service_account
 
-def init_session_state():
-    if "google_auth_code" not in st.session_state:
-        st.session_state["google_auth_code"] = None
-    if "user_info" not in st.session_state:
-        st.session_state["user_info"] = None
+import threading 
 
-init_session_state()
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+import plotly.express as px
+from app import home 
 
-def auth_flow():
-    st.set_page_config(layout="wide", page_title="TikTok CRM")
+# Configuration
+REDIRECT_URI = "http://localhost:8501"
+CLIENT_SECRETS_FILE = "clientSecrets.json"
+SCOPES = [
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/calendar.readonly",
+    "openid"
+]
 
-    # Custom CSS
+# Create a Flow instance
+flow = Flow.from_client_secrets_file(
+    CLIENT_SECRETS_FILE,
+    scopes=SCOPES,
+    redirect_uri=REDIRECT_URI
+)
+
+def save_user_data(user_data):
+    with open("user_data.pkl", "wb") as f:
+        pickle.dump(user_data, f)
+
+def credentials_to_dict(credentials):
+    return {
+        'token': credentials.token,
+        'refresh_token': credentials.refresh_token,
+        'token_uri': credentials.token_uri,
+        'client_id': credentials.client_id,
+        'client_secret': credentials.client_secret,
+        'scopes': credentials.scopes
+    }
+
+def login_page():
     st.markdown("""
     <style>
     .stApp {
@@ -65,50 +103,47 @@ def auth_flow():
 
     # Sidebar
     st.markdown('<div class="sidebar">', unsafe_allow_html=True)
-    st.markdown("<h2 class='login-text'>Sidebar</h2>", unsafe_allow_html=True)
     # Add any sidebar content here
     st.markdown('</div>', unsafe_allow_html=True)
 
     # Main content
-     # Main content
     with col2:
         st.markdown('<div class="content">', unsafe_allow_html=True)
-        st.markdown("<h1 class='login-text'>Welcome to TikTok CRM</h1>", unsafe_allow_html=True)
-        st.markdown("<p class='login-text'>Sign in with Google to see the latest updates.</p>", unsafe_allow_html=True)
+        st.markdown("<h1 class='login-text'>IntelliTok</h1>", unsafe_allow_html=True)
+        st.markdown("<p class='login-text'>Sign in with Google to continue to IntelliTok.</p>", unsafe_allow_html=True)
+        if st.button("Login with Google"):
+            authorization_url, _ = flow.authorization_url(prompt="consent")
+            webbrowser.open_new_tab(authorization_url)
 
-        # Check if we're in the callback
+def main():
+    if "page" not in st.session_state:
+        st.session_state.page = "login"
 
+    if st.session_state.page == "login":
+        login_page()
         auth_code = st.query_params.get("code")
-        flow = Flow.from_client_secrets_file(
-            "clientSecrets.json",
-            scopes=["https://www.googleapis.com/auth/userinfo.email", "openid"],
-            redirect_uri=redirect_uri,
-        )
+        # Check if the OAuth flow has completed
         if auth_code:
-            flow.fetch_token(code=auth_code)
-            credentials = flow.credentials
-            st.write("Login Done")
-            user_info_service = build(
-                serviceName="oauth2",
-                version="v2",
-                credentials=credentials,
-            )
-            user_info = user_info_service.userinfo().get().execute()
-            assert user_info.get("email"), "Email not found in infos"
-            st.session_state["google_auth_code"] = auth_code
-            st.session_state["user_info"] = user_info
-        elif st.session_state["google_auth_code"] is None:
-            if st.button("Sign in with Google"):
-                authorization_url, state = flow.authorization_url(
-                    access_type="offline",
-                    include_granted_scopes="true",
-                )
-                webbrowser.open_new_tab(authorization_url)
-        else:
-            st.write(f"Welcome back, {st.session_state['user_info'].get('email')}")
+            with st.spinner("Authenticating..."):
+                try:
+                    flow.fetch_token(code=auth_code)
+                    credentials = flow.credentials
+                    
+                    user_info_service = build('oauth2', 'v2', credentials=credentials)
+                    user_info = user_info_service.userinfo().get().execute()
+                    
+                    # Save user data and credentials as a JSON string
+                    user_info['credentials'] = json.dumps(credentials_to_dict(credentials))
+                    save_user_data(user_info)
+                    
+                    st.session_state.page = "homepage"
+                    st.success("Authentication successful!")
+                    st.experimental_rerun()
+                except Exception as e:
+                    st.error(f"An error occurred: {str(e)}")
 
-            
-            st.markdown('</div>', unsafe_allow_html=True)
+    elif st.session_state.page == "homepage":
+        home()
 
 if __name__ == "__main__":
-    auth_flow()
+    main()
