@@ -13,7 +13,7 @@ IntelliTok is an advanced sales assistant application designed to streamline and
 - **Business Intelligence**: Comprehensive analytics on sales pipeline and performance metrics.
 - **Profile Management**: Personalized user profiles with performance tracking.
 
-##Live Demo
+## Live Demo
 https://youtu.be/Y-3WkBcNKDw
 
 ## Installation
