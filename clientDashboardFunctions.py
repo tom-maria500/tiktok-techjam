@@ -16,6 +16,7 @@ client = openai.OpenAI(api_key=os.getenv("OPEN_API_KEY_CLIENT_DASHBOARD"))
 
 assistant_id = "asst_HI5jDraznUXvlLmfmjqTmh8l"
 
+
 def wait_for_run_completion(client, thread_id, run_id, sleep_interval=5):
         while True:
             try:
@@ -40,21 +41,9 @@ def wait_for_run_completion(client, thread_id, run_id, sleep_interval=5):
             logging.info("Waiting for run to complete...")
             time.sleep(sleep_interval)
 
-def createDashboardThread():
-    thread = client.beta.threads.create(
-    messages=[
-        {
-            "role":"user",
-            "content": "what industry is this client in?"
-        }
-        ]
-    )
-    thread_id = thread.id
-    return thread_id
 
-def generateTasks(vector_store_id):
-    vector_store_id = vector_store_id
-    thread_id = createDashboardThread()
+def generateTasks():
+    thread_id = "thread_YauPdUhSEXzuXbMQggGgiSi0"
 
     #create a message
     message = "Can you list the three most important tasks to complete for the tiktok representative to complete after the meeting using the file titled Meeting Transcript with the most recent date? The entire response should be in a python list of length 3 where each item in list is a string with the task. Entire response should be less than 50 words. No other explanation or introduction should be part of response and output must be a python list with three strings in it that are the three tasks."
@@ -89,12 +78,15 @@ def generateTasks(vector_store_id):
     return returnedList
     
 
-def generateSentimentAnalysis(vector_store_id):
-        vector_store_id = vector_store_id
-        thread_id = createDashboardThread()
+def generateSentimentAnalysis():
+        
+        thread_id = "thread_PCXr587dqZnASq0MQr93xrD6"
 
         #create a message
-        message = "Can you read all files you have access to and generate a score out of 100 for sentiment analysis of how well client interaction is going. Your response must always be in a json format with the number as the key and the value as a short explanation behind of score that is about 2 sentences. JSON should only have 1 key-value pair with overall score with key and value enclosed in double quotes. they key is the number score and the value is 2 sentences. No other explanation or introduction should be part of response and response must always be in json format."
+        # message = "Can you read all files you have access to and generate a score out of 100 for sentiment analysis of how well client interaction is going. Your response must always be in a json format with the number as the key and the value as a short explanation behind of score that is about 2 sentences. JSON should only have 1 key-value pair with overall score with key and value enclosed in double quotes. they key is the number score and the value is 2 sentences. No other explanation or introduction should be part of response and response must always be in json format."
+        message = """
+        Can you read all files you have access to and generate a score out of 100 for sentiment analysis of how well client interaction is going. Your response must always be in a JSON format with the number as the key and the value as a short explanation behind the score that is about 2 sentences. JSON should only have 1 key-value pair with the overall score with key and value enclosed in double quotes. The key is the number score and the value is 2 sentences. No other explanation or introduction should be part of the response and the response must always be in JSON format.
+        """
         message = client.beta.threads.messages.create (
             thread_id=thread_id,
             role="user",

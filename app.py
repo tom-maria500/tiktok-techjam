@@ -26,40 +26,12 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
+from sqldb import getClientInformation, getDirectReportsMetrics, is_manager, getProfileInfo, getUserMetrics, getClientNames
+from logout import logout
 
-from clientDashboard import showClientDashboard
-from bs4 import BeautifulSoup
+from clientDashboard import showClientDashboard, upload_to_openai, uploadTranscriptToVS, get_client_data
 
-# Sample data for TikTok CRM
-client_data = {
-    "Amazon": {
-        "Industry": "E-commerce",
-        "Status": "Negotiating",
-        "Point of Contact": "Maria Thomas",
-        "Email": "maria.tom06@gmail.com",
-        "VectorStoreID": ""
-    },
-    "Gymshark": {
-        "Industry": "Fitness Apparel",
-        "Status": "Negotiating",
-        "Point of Contact": "Michael Brown",
-        "Email": "michael@gymshark.com",
-        "VectorStoreID": ""
-    },
-    "Crocs": {
-        "Industry": "Footwear",
-        "Status": "Negotiating",
-        "Point of Contact": "Tom Harris",
-        "Email": "tom@crocs.com",
-        "VectorStoreID": ""
-    }
-}
-
-# Convert dict into json
-json_data = json.dumps(client_data)
-
-# Create a pandas DataFrame from the dictionary
-df = pd.DataFrame.from_dict(client_data, orient='index')
+from recommend_client import fetch_tiktok_data, pills
 
 dotenv.load_dotenv()
 client_chatbot = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
@@ -323,7 +295,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/calendar.readonly",
     "openid"
 ]
-
+ 
 # Create a Flow instance
 flow = Flow.from_client_secrets_file(
     CLIENT_SECRETS_FILE,
@@ -472,17 +444,17 @@ def format_datetime(dt_string):
     return dt.strftime("%A, %B %d, %Y at %I:%M %p")
 
 def home():
+    st.set_page_config(layout="wide")
     init_session_state()
 
     # Define a stop event
     stop_recording_event = threading.Event()
 
-    st.set_page_config(layout="wide")
 
     st.markdown('<style>' + open('./style.css').read() + '</style>', unsafe_allow_html=True)
 
     with st.sidebar:
-        client_names = list(client_data.keys())
+        client_names = getClientNames()
         option = st.selectbox(
             "Select client",
             client_names
@@ -491,8 +463,10 @@ def home():
                             iconName=['dashboard', 'phone', 'lightbulb', 'person', 'logout'], default_choice=0)
 
     if tabs == 'Dashboard':
-        industryName = client_data[option]["Industry"]
-        clientEmail = client_data[option]["Email"]
+        clientDict = getClientInformation(option)
+        print(clientDict)
+        industryName = clientDict['industry']
+        clientEmail = clientDict['email']
         user_data = load_user_data()
         credentials_dict = json.loads(user_data['credentials'])
         credentials = Credentials.from_authorized_user_info(info=credentials_dict)
@@ -597,6 +571,7 @@ def home():
 
             transcription = ""
             filename = ""
+            meeting_name = ""
             # start button
             if col1.button("Start Recording", key="start_button"):
                 stop_recording_event.clear()
@@ -609,6 +584,12 @@ def home():
             if col2.button("Meeting Done", key="stop_button"):
                 stop_recording_event.set()
                 st.success("Recording stopped and transcript saved.")
+                tasks, scoreDict = get_client_data()
+                st.cache_data.clear()
+                # create the file object 
+                file_object = upload_to_openai(st.session_state.filename)
+                # add to vector store 
+                uploadTranscriptToVS(file_object, "vs_G0ichcYATIwdL2x2TWYnBtm7")
 
             # Display chat messages from history on app rerun
             for message in st.session_state.messages:
@@ -677,139 +658,334 @@ def home():
     elif tabs == 'Business':
         st.title("Business Intelligence")
 
-        # Create tabs for different BI perspectives
-        bi_tabs = st.tabs(["Manager's Insights", "Team Performance", "Sales Analysis", "Personal Sales Process"])
+        # Get user data and check if they're a manager
+        user_data = load_user_data()
+        credentials_dict = json.loads(user_data['credentials'])
+        credentials = Credentials.from_authorized_user_info(info=credentials_dict)
+        userEmail = user_data.get('email')
+        is_user_manager = is_manager(userEmail)
 
-        with bi_tabs[0]:
-            st.header("Advertising Sales Manager")
-            # Example KPIs for boss's perspective
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Revenue", "$1.2M", "+8%")
-            col2.metric("Profit Margin", "22%", "+2%")
-            col3.metric("Customer Acquisition Cost", "$50", "-10%")
+        # Create tabs based on user role
+        if is_user_manager:
+            bi_tabs = st.tabs(["Team Performance", "Recommended Partners"])
+        else:
+            bi_tabs = st.tabs(["Personal Sales Process"])
 
-            # Example chart
-            st.subheader("Revenue Trend")
-            chart_data = pd.DataFrame(
-                np.random.randn(20, 3),
-                columns=['Revenue', 'Costs', 'Profit'])
-            st.line_chart(chart_data)
+        # Team Performance tab (only for managers)
+        if is_user_manager:
+            with bi_tabs[0]:
+                st.header("Team Performance")
 
-        with bi_tabs[1]:
-            st.header("Team Performance")
+                # Team performance metrics
+                st.subheader("Team KPIs")
+            
+                team_metrics = getDirectReportsMetrics(userEmail=userEmail)
 
-            # Team performance metrics
-            st.subheader("Team KPIs")
-            team_data = pd.DataFrame({
-                'Team Member': ['Alice', 'Bob', 'Charlie', 'David'],
-                'Sales': [100000, 85000, 92000, 78000],
-                'Deals Closed': [15, 12, 14, 10],
-                'Customer Satisfaction': [4.8, 4.6, 4.7, 4.5],
-                'Conversion Rate': [0.25, 0.22, 0.24, 0.20],
-                'Average Deal Size': [6667, 7083, 6571, 7800]
-            })
+                # Convert the result dictionary to a DataFrame
+                team_data = pd.DataFrame([
+                    {
+                        'Team Member': full_name,
+                        'Sales': metrics['total_sales'],
+                        'Deals Closed': metrics['deals_closed'],
+                        'Customer Satisfaction': metrics['customer_satisfaction'],
+                        'Conversion Rate': metrics['conversion_rate'],
+                        'Average Deal Size': metrics['average_deal_size']
+                    }
+                    for full_name, metrics in team_metrics.items()
+                ])
 
-            st.table(team_data)
+                # Sort the DataFrame by Sales in descending order
+                team_data = team_data.sort_values('Sales', ascending=False)
 
-            # Team performance charts
-            col1, col2 = st.columns(2)
+                st.table(team_data)
 
-            with col1:
-                st.subheader("Sales Performance by Team Member")
-                fig = px.bar(team_data, x='Team Member', y='Sales', text='Sales')
-                fig.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
-                fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
-                st.plotly_chart(fig, use_container_width=True)
+                # Team performance charts
+                col1, col2 = st.columns(2)
 
-            with col2:
-                st.subheader("Deals Closed vs Customer Satisfaction")
-                fig = px.scatter(team_data, x='Deals Closed', y='Customer Satisfaction', color='Team Member', hover_name='Team Member')
-                st.plotly_chart(fig, use_container_width=True)
+                with col1:
+                    st.subheader("Sales Performance by Team Member")
+                    fig = px.bar(team_data, x='Team Member', y='Sales', text='Sales')
+                    fig.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
+                    fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+                    st.plotly_chart(fig, use_container_width=True)
 
-        with bi_tabs[2]:
-            st.header("Sales Analysis")
-            col1, col2 = st.columns([3,2])
+                with col2:
+                    st.subheader("Deals Closed vs Customer Satisfaction")
+                    fig = px.scatter(team_data, x='Deals Closed', y='Customer Satisfaction', color='Team Member', hover_name='Team Member')
+                    st.plotly_chart(fig, use_container_width=True)
+            with bi_tabs[1]:
+                st.write("*Discover potential clients and future deals with IntelliTok's smart ad insights.*")
+                # Initialize session state to store the dataframe
+                if 'df' not in st.session_state:
+                    st.session_state.df = None
+                if st.button("Find Trending Brands") or st.session_state.df is not None:
+                    if st.session_state.df is None:
+                        with st.spinner("Fetching and analyzing data..."):
+                            st.session_state.df = fetch_tiktok_data()
+                    df = st.session_state.df
+                    
+                    if not df.empty:
+                        # Display summary statistics
+                        st.subheader("Summary Statistics")
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Top Videos Analyzed", len(df))
+                        col2.metric("Unique Industries", df['Industry'].nunique())
+                        col3.metric("Unique Brands", df['Brand'].nunique())
 
-            with col1:
-                st.subheader("Sales Funnel")
-                # Sales funnel
-                funnel_data = pd.DataFrame({
-                    'Stage': ['Leads', 'Qualified Leads', 'Proposals', 'Negotiations', 'Closed Deals'],
-                    'Count': [1000, 500, 200, 100, 50]
-                })
-                fig = go.Figure(go.Funnelarea(
-                    values = funnel_data['Count'],
-                    text = funnel_data['Stage'],
-                    #textinfo = "value+percent total"
-                ))
-                # Customize the layout
-                fig.update_layout(
-                    font_size = 14,
-                    height = 300,
-                    margin=dict(t=0, b=0, l=0, r=0) 
-                )
-                st.plotly_chart(fig, use_container_width=True)
+                        # Display industries as pills
+                        st.subheader("Industries")
+                        unique_industries = df['Industry'].unique().tolist()
+                        selected_industry = pills("Select an industry", unique_industries)
 
-            with col2:
-                st.subheader("Sales Trend")
-                dates = pd.date_range(start='1/1/2024', end='7/1/2024', freq='ME')
-                sales_trend = pd.DataFrame({
-                    'Date': dates,
-                    'Sales': np.random.randint(50000, 100000, size=len(dates))
-                })
-                sales_trend.set_index('Date', inplace=True)
-                st.line_chart(sales_trend)
+                        if selected_industry:
+                            st.subheader(f"Potential Clients")
+                            filtered_df = df[df['Industry'] == selected_industry]
+                            for _, row in filtered_df.iterrows():
+                                st.info(f"**Brand:** {row['Brand']}")
+                                st.markdown(f"**Ad Views:** {row['Ad Views']}")
 
-        with bi_tabs[3]:
-            st.header("Personal Sales Process Analysis")
-            # Personal sales metrics
-            st.subheader("Your Sales Metrics")
-            col1, col2, col3 = st.columns(3)
-            col1.metric("Your Sales", "$120K", "+5%")
-            col2.metric("Conversion Rate", "18%", "+2%")
-            col3.metric("Average Deal Size", "$8K", "+1%")
+                        # Display full data (expandable)
+                        with st.expander("View Ad Data"):
+                            st.dataframe(df, use_container_width=True)
+                    else:
+                        st.warning("No data available. Please try again later.")
 
-            # Sales activity breakdown
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Activities Breakdown")
-                activities = pd.DataFrame({
-                    'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
-                    'Hours Spent': [20, 15, 10, 5]
-                })
-                fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
-                fig.update_layout(title_text='Sales Activities Breakdown', 
-                                margin=dict(t=40, b=0, l=0, r=0),
-                                height = 300,  
-                                width = 500)
-                st.plotly_chart(fig)
+        else:
+            # Personal Sales Process tab (for non-managers)
+            with bi_tabs[0]:
+                st.header("Personal Sales Process Analysis")
+                # Personal sales metrics
+                st.subheader("Your Sales Metrics")
+                # Get user data and check if they're a manager
+                user_data = load_user_data()
+                credentials_dict = json.loads(user_data['credentials'])
+                credentials = Credentials.from_authorized_user_info(info=credentials_dict)
+                userEmail = user_data.get('email')
+                userMetricsDict = getUserMetrics(userEmail=userEmail)
 
-            with col2:
-                # Areas for improvement
-                st.subheader("Areas for Improvement")
-                improvements = [
-                    "Increase follow-up frequency",
-                    "Improve product knowledge",
-                    "Enhance negotiation skills"
-                ]
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Your Sales", float(userMetricsDict["total_sales"]))
+                col2.metric("Conversion Rate", float(userMetricsDict["conversion_rate"]))
+                col3.metric("Average Deal Size", float(userMetricsDict["average_deal_size"]))
 
-                for item in improvements:
-                    st.info(item)
+                # Sales activity breakdown
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("Activities Breakdown")
+                    activities = pd.DataFrame({
+                        'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
+                        'Hours Spent': [20, 15, 10, 5]
+                    })
+                    fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
+                    fig.update_layout(title_text='Sales Activities Breakdown', 
+                                    margin=dict(t=40, b=0, l=0, r=0),
+                                    height = 300,  
+                                    width = 500)
+                    st.plotly_chart(fig)
+
+                with col2:
+                    # Areas for improvement
+                    st.subheader("Areas for Improvement")
+                    improvements = [
+                        "Increase follow-up frequency",
+                        "Improve product knowledge",
+                        "Enhance negotiation skills"
+                    ]
+
+                    for item in improvements:
+                        st.info(item)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        # st.title("Business Intelligence")
+
+        # # Create tabs for different BI perspectives
+        # bi_tabs = st.tabs(["Team Performance", "Personal Sales Process"])
+
+        # with bi_tabs[0]:
+        #     st.header("Advertising Sales Manager")
+        #     # Example KPIs for boss's perspective
+        #     col1, col2, col3 = st.columns(3)
+        #     col1.metric("Revenue", "$1.2M", "+8%")
+        #     col2.metric("Profit Margin", "22%", "+2%")
+        #     col3.metric("Customer Acquisition Cost", "$50", "-10%")
+
+        #     # Example chart
+        #     st.subheader("Revenue Trend")
+        #     chart_data = pd.DataFrame(
+        #         np.random.randn(20, 3),
+        #         columns=['Revenue', 'Costs', 'Profit'])
+        #     st.line_chart(chart_data)
+
+        # with bi_tabs[0]:
+        #     st.header("Team Performance")
+
+        #     # Team performance metrics
+        #     st.subheader("Team KPIs")
+           
+        #     # get direct reports data using user email
+        #     user_data = load_user_data()
+        #     credentials_dict = json.loads(user_data['credentials'])
+        #     credentials = Credentials.from_authorized_user_info(info=credentials_dict)
+        #     # credentials = st.session_state.get("credentials")
+        #     userEmail = user_data.get('email')
+        #     team_metrics = getDirectReportsMetrics(userEmail=userEmail)
+        #     print("-------------------------------")
+        #     print(team_metrics)
+
+            # # Convert the result dictionary to a DataFrame
+            # team_data = pd.DataFrame([
+            #     {
+            #         'Team Member': full_name,
+            #         'Sales': metrics['total_sales'],
+            #         'Deals Closed': metrics['deals_closed'],
+            #         'Customer Satisfaction': metrics['customer_satisfaction'],
+            #         'Conversion Rate': metrics['conversion_rate'],
+            #         'Average Deal Size': metrics['average_deal_size']
+            #     }
+            #     for full_name, metrics in team_metrics.items()
+            # ])
+
+            # # Sort the DataFrame by Sales in descending order
+            # team_data = team_data.sort_values('Sales', ascending=False)
+
+            # st.table(team_data)
+
+            # # Team performance charts
+            # col1, col2 = st.columns(2)
+
+            # with col1:
+            #     st.subheader("Sales Performance by Team Member")
+            #     fig = px.bar(team_data, x='Team Member', y='Sales', text='Sales')
+            #     fig.update_traces(texttemplate='$%{text:,.0f}', textposition='outside')
+            #     fig.update_layout(uniformtext_minsize=8, uniformtext_mode='hide')
+            #     st.plotly_chart(fig, use_container_width=True)
+
+            # with col2:
+            #     st.subheader("Deals Closed vs Customer Satisfaction")
+            #     fig = px.scatter(team_data, x='Deals Closed', y='Customer Satisfaction', color='Team Member', hover_name='Team Member')
+            #     st.plotly_chart(fig, use_container_width=True)
+
+
+
+        # with bi_tabs[2]:
+        #     st.header("Sales Analysis")
+        #     col1, col2 = st.columns([3,2])
+
+        #     with col1:
+        #         st.subheader("Sales Funnel")
+        #         # Sales funnel
+        #         funnel_data = pd.DataFrame({
+        #             'Stage': ['Leads', 'Qualified Leads', 'Proposals', 'Negotiations', 'Closed Deals'],
+        #             'Count': [1000, 500, 200, 100, 50]
+        #         })
+        #         fig = go.Figure(go.Funnelarea(
+        #             values = funnel_data['Count'],
+        #             text = funnel_data['Stage'],
+        #             #textinfo = "value+percent total"
+        #         ))
+        #         # Customize the layout
+        #         fig.update_layout(
+        #             font_size = 14,
+        #             height = 300,
+        #             margin=dict(t=0, b=0, l=0, r=0) 
+        #         )
+        #         st.plotly_chart(fig, use_container_width=True)
+
+        #     with col2:
+        #         st.subheader("Sales Trend")
+        #         dates = pd.date_range(start='1/1/2024', end='7/1/2024', freq='ME')
+        #         sales_trend = pd.DataFrame({
+        #             'Date': dates,
+        #             'Sales': np.random.randint(50000, 100000, size=len(dates))
+        #         })
+        #         sales_trend.set_index('Date', inplace=True)
+        #         st.line_chart(sales_trend)
+
+        # with bi_tabs[1]:
+        #     st.header("Personal Sales Process Analysis")
+        #     # Personal sales metrics
+        #     st.subheader("Your Sales Metrics")
+        #     col1, col2, col3 = st.columns(3)
+        #     col1.metric("Your Sales", "$120K", "+5%")
+        #     col2.metric("Conversion Rate", "18%", "+2%")
+        #     col3.metric("Average Deal Size", "$8K", "+1%")
+
+        #     # Sales activity breakdown
+        #     col1, col2 = st.columns(2)
+        #     with col1:
+        #         st.subheader("Activities Breakdown")
+        #         activities = pd.DataFrame({
+        #             'Activity': ['Calls', 'Emails', 'Meetings', 'Proposals'],
+        #             'Hours Spent': [20, 15, 10, 5]
+        #         })
+        #         fig = go.Figure(data=[go.Pie(labels=activities['Activity'], values=activities['Hours Spent'])])
+        #         fig.update_layout(title_text='Sales Activities Breakdown', 
+        #                         margin=dict(t=40, b=0, l=0, r=0),
+        #                         height = 300,  
+        #                         width = 500)
+        #         st.plotly_chart(fig)
+
+        #     with col2:
+        #         # Areas for improvement
+        #         st.subheader("Areas for Improvement")
+        #         improvements = [
+        #             "Increase follow-up frequency",
+        #             "Improve product knowledge",
+        #             "Enhance negotiation skills"
+        #         ]
+
+        #         for item in improvements:
+        #             st.info(item)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     elif tabs == 'Profile':
         st.title("TikTok Smart Sales Profile")
         user_data = load_user_data()
+        credentials_dict = json.loads(user_data['credentials'])
+        credentials = Credentials.from_authorized_user_info(info=credentials_dict)
+        userEmail = user_data.get('email')
+        userInfo = getProfileInfo(userEmail)
 
         # Initialize session state for profile data if not exists
         if 'profile_data' not in st.session_state:
             st.session_state.profile_data = {
-                'name': user_data.get('name', "John Doe") if user_data else "John Doe",
-                'email': user_data.get('email', "john.doe@example.com") if user_data else "john.doe@example.com",
-                'role': "Senior Sales Representative",
-                'phone': "+1 (555) 123-4567",
-                'team': "Enterprise Sales Team",
-                'reports_to': "Sarah Johnson, Sales Director",
-                'bio': "Experienced sales professional with a track record of exceeding targets in the enterprise software sector. Specializes in building long-term client relationships and delivering tailored solutions."
-            }
+                'name': f"{userInfo['fname']} {userInfo['lname']}",
+                'email': userInfo['email'],
+                'role': userInfo['companyRole'],
+                'phone': userInfo['phone'],
+                'team': userInfo['team'],
+                'reports_to': userInfo['reports_to'],
+                'bio': userInfo['bio']
+    }
 
         # Create two columns for layout
         col1, col2 = st.columns([1, 3])
@@ -855,3 +1031,6 @@ def home():
                 
                 st.subheader("Bio")
                 st.write(st.session_state.profile_data['bio'])
+    # elif tabs == "Logout":
+    #     #logout()
+        

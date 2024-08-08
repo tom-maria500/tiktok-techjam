@@ -1,6 +1,5 @@
 import streamlit as st 
 import webbrowser
-from app import home
 
 import datetime
 import os
@@ -23,13 +22,14 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from app import home 
+from app import home
+
 
 # Configuration
 REDIRECT_URI = "http://localhost:8501"
 CLIENT_SECRETS_FILE = "clientSecrets.json"
 SCOPES = [
-    "https://www.googleapis.com/auth/userinfo.email",
+   "https://www.googleapis.com/auth/userinfo.email",
     "https://www.googleapis.com/auth/userinfo.profile",
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/calendar.readonly",
@@ -100,6 +100,14 @@ def login_page():
     """, unsafe_allow_html=True)
 
     col1, col2, col3 = st.columns([1,2,1])
+
+    # # Check for and clear any residual OAuth data
+    # if 'credentials' in st.session_state:
+    #     del st.session_state['credentials']
+    
+    # for key in list(st.session_state.keys()):
+    #     if key.startswith('oauth2_'):
+    #         del st.session_state[key]
 
     # Sidebar
     st.markdown('<div class="sidebar">', unsafe_allow_html=True)

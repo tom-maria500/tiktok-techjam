@@ -7,15 +7,11 @@ import plotly.graph_objects as go
 from gmail_utils import search_emails
 import os 
 from streamlit_option_menu import option_menu
-
+import concurrent.futures
 
 # Load environment variables and initialize OpenAI client
-# @st.cache_resource
-# def initialize_resources():
-#     load_dotenv()
-#     return openai.OpenAI(api_key=os.getenv("OPEN_API_KEY_CLIENT_DASHBOARD"))
-
 client = openai.OpenAI(api_key=os.getenv("OPEN_API_KEY_CLIENT_DASHBOARD"))
+
 
 @st.cache_data
 def upload_to_openai(filepath):
@@ -23,8 +19,15 @@ def upload_to_openai(filepath):
         response = client.files.create(file=file, purpose="assistants")
     return response.id
 
+def uploadTranscriptToVS(file_id, vector_store_id):
+    file = client.beta.vector_stores.files.create_and_poll(
+                    vector_store_id=vector_store_id,
+                    file_id=file_id
+    )
+
+
 def handle_chat_input(prompt, chat_container, client, assistant_id):
-    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.chat_messages.append({"role": "user", "content": prompt})
     with chat_container:
         with st.chat_message("user"):
             st.markdown(prompt)
@@ -49,15 +52,15 @@ def handle_chat_input(prompt, chat_container, client, assistant_id):
                     thread_id=st.session_state.thread_id, run_id=run.id
                 )
 
-            messages = client.beta.threads.messages.list(thread_id=st.session_state.thread_id)
+            chat_messages = client.beta.threads.messages.list(thread_id=st.session_state.thread_id)
             assistant_messages_for_run = [
-                message for message in messages
+                message for message in chat_messages
                 if message.run_id == run.id and message.role == "assistant"
             ]
 
         for message in assistant_messages_for_run:
             full_response = message.content[0].text.value
-            st.session_state.messages.append({"role": "assistant", "content": full_response})
+            st.session_state.chat_messages.append({"role": "assistant", "content": full_response})
             with st.chat_message("assistant"):
                 st.markdown(full_response, unsafe_allow_html=True)
 
@@ -79,16 +82,21 @@ def handle_file_upload(vector_store_id, file_uploaded):
         st.success(f"File {file_uploaded.name} uploaded successfully!")
 
 @st.cache_data(show_spinner=False)
-def get_client_data(vector_store_id):
-    tasks = generateTasks(vector_store_id=vector_store_id)
-    scoreDict = generateSentimentAnalysis(vector_store_id=vector_store_id)
+def get_client_data():
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        tasks_future = executor.submit(generateTasks)
+        scoreDict_future = executor.submit(generateSentimentAnalysis)
+        
+        tasks = tasks_future.result()
+        scoreDict = scoreDict_future.result()
+    
     return tasks, scoreDict
 
 def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, credentials, userEmail):
     st.title(f"{clientName} | {industryName}")
 
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
+    if "chat_messages" not in st.session_state:
+        st.session_state.chat_messages = []
     if "thread_id" not in st.session_state:
         chat_thread = client.beta.threads.create()
         st.session_state.thread_id = chat_thread.id
@@ -100,9 +108,10 @@ def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, 
     )
     
     if selected == "Client Overview":
-        st.spinner("Loading...")
-        tasks, scoreDict = get_client_data(vector_store_id)
+        with st.spinner("Loading..."):
+            tasks, scoreDict = get_client_data()
         with st.container():
+            
             st.subheader("Client Information")
             st.write(f"Client Name: {clientName}")
             st.write(f"Client Email: {clientEmail}")
@@ -115,7 +124,6 @@ def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, 
                 st.markdown(f"{i}. {task}")
 
         with col2:
-            scoreDict = generateSentimentAnalysis(vector_store_id=vector_store_id)
             score = 0
             key=""
             for score in scoreDict:
@@ -146,6 +154,7 @@ def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, 
                 margin=dict(l=0, r=0, t=40, b=0)
             )
             st.plotly_chart(fig)
+            st.write(scoreDict[key])
 
         with st.form(key='file_upload_form'):
             file_uploaded = st.file_uploader(
@@ -160,7 +169,9 @@ def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, 
         st.header("Email Summaries")
         if credentials:
             specific_email = clientEmail
+            print(specific_email)
             user_email = userEmail
+            print(user_email)
             query = f'(from:"{user_email}" to:"{specific_email}") OR (from:"{specific_email}" to:"{user_email}")'
             emails = search_emails(credentials, query)
             for email in emails:
@@ -172,9 +183,10 @@ def showClientDashboard(clientName, clientEmail, industryName, vector_store_id, 
         st.subheader("Chat Assistant")
         chat_container = st.container()
         with chat_container:
-            for message in st.session_state.messages:
+            for message in st.session_state.chat_messages:
                 with st.chat_message(message["role"]):
                     st.markdown(message["content"], unsafe_allow_html=True)
 
         if prompt := st.chat_input("Ask any questions you have about your client"):
             handle_chat_input(prompt, chat_container, client, "asst_HI5jDraznUXvlLmfmjqTmh8l")
+
